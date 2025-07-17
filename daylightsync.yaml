@@ -2,8 +2,7 @@ blueprint:
   name: Adaptives Tageslicht (Sonnenhöhe)
   description: Passt Farbtemperatur und Helligkeit von Lichtern dynamisch an die Sonnenhöhe an, inkl. sanfter Übergänge und spezieller Helligkeit für Arbeitsbereiche.
   domain: automation
-  source_url: https://gist.github.com/your-username/your-blueprint-id # Optional: Füge hier später einen Link zu deinem Gist/Repository ein
-
+  source_url: https://raw.githubusercontent.com/Cederick/thedump/refs/heads/main/daylightsync.yaml
   input:
     # ----------------------------------------------------
     # Allgemeine Lichter (z.B. Wohnzimmer, Schlafzimmer)
