@@ -1,0 +1,187 @@
+blueprint:
+  name: Adaptives Tageslicht (Sonnenhöhe)
+  description: Passt Farbtemperatur und Helligkeit von Lichtern dynamisch an die Sonnenhöhe an, inkl. sanfter Übergänge und spezieller Helligkeit für Arbeitsbereiche.
+  domain: automation
+  source_url: https://gist.github.com/your-username/your-blueprint-id # Optional: Füge hier später einen Link zu deinem Gist/Repository ein
+
+  input:
+    # ----------------------------------------------------
+    # Allgemeine Lichter (z.B. Wohnzimmer, Schlafzimmer)
+    # ----------------------------------------------------
+    lights_normal:
+      name: Lichter (Normalbereich)
+      description: Wähle die Lichter, deren Farbtemperatur und Helligkeit angepasst werden soll.
+      selector:
+        entity:
+          domain: light
+          multiple: true # Erlaubt die Auswahl mehrerer Lichter
+
+    min_brightness_normal:
+      name: Mindesthelligkeit für normale Lichter (%)
+      description: Die minimale Helligkeit in Prozent (0-100), die normale Lichter nie unterschreiten sollen (z.B. 20 für Gemütlichkeit).
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    # ----------------------------------------------------
+    # Arbeitsbereichs-Lichter (z.B. Küche, Bad)
+    # ----------------------------------------------------
+    lights_work_area:
+      name: Lichter (Arbeitsbereich)
+      description: (Optional) Wähle Lichter in Arbeitsbereichen (z.B. Küche, Bad), die eine höhere Mindesthelligkeit behalten sollen. Eine Lampe sollte NUR in dieser ODER der 'Lichter (Normalbereich)' Liste sein.
+      default: [] # Standardmäßig leer
+      selector:
+        entity:
+          domain: light
+          multiple: true
+
+    min_brightness_work_area:
+      name: Mindesthelligkeit für Arbeitsbereichs-Lichter (%)
+      description: Die minimale Helligkeit in Prozent (0-100), die Arbeitsbereichs-Lichter nie unterschreiten sollen (z.B. 50 für gute Ausleuchtung).
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    # ----------------------------------------------------
+    # Farbtemperatur-Einstellungen
+    # ----------------------------------------------------
+    min_color_temp_kelvin:
+      name: Minimale Farbtemperatur (Kelvin)
+      description: Der wärmste Kelvin-Wert, der erreicht werden soll (z.B. 2700K für gemütliches Licht).
+      default: 2700
+      selector:
+        number:
+          min: 2000
+          max: 4000 # Ein sinnvoller Bereich für warme Farben
+          unit_of_measurement: "K"
+          mode: slider
+
+    max_color_temp_kelvin:
+      name: Maximale Farbtemperatur (Kelvin)
+      description: Der kälteste Kelvin-Wert, der erreicht werden soll (z.B. 6500K für helles Tageslicht).
+      default: 6500
+      selector:
+        number:
+          min: 4500 # Ein sinnvoller Bereich für kalte Farben
+          max: 8000
+          unit_of_measurement: "K"
+          mode: slider
+
+    # ----------------------------------------------------
+    # Übergangs-Einstellungen
+    # ----------------------------------------------------
+    transition_time:
+      name: Übergangszeit (Sekunden)
+      description: Die Dauer in Sekunden, über die Helligkeit und Farbtemperatur sanft geändert werden.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: "s"
+          mode: slider
+
+mode: parallel # Erlaubt es, dass die Automatisierung mehrfach gleichzeitig läuft (wichtig für den Einschalt-Trigger)
+max_exceeded: silent # Verhindert Fehler, wenn zu viele parallele Ausführungen passieren sollten
+
+trigger:
+  # Trigger 1: Alle 5 Minuten aktualisieren für kontinuierliche Anpassung
+  - platform: time_pattern
+    minutes: "/5"
+  # Trigger 2: Beim Einschalten eines der überwachten Lichter
+  - platform: state
+    entity_id: !input lights_normal
+    from: "off"
+    to: "on"
+  - platform: state
+    entity_id: !input lights_work_area
+    from: "off"
+    to: "on"
+
+variables:
+  # Konfigurierbare Werte aus den Inputs
+  min_ct_k: !input min_color_temp_kelvin
+  max_ct_k: !input max_color_temp_kelvin
+  min_bright_normal: !input min_brightness_normal
+  min_bright_work: !input min_brightness_work_area
+  transition: !input transition_time
+  all_lights: "{{ states.light | map(attribute='entity_id') | list }}" # Eine Liste aller existierenden Lichter
+
+action:
+  # Iterieren über alle im Blueprint ausgewählten Lichter
+  - repeat:
+      for_each: "{{ (input_lights_normal | default([]) + input_lights_work_area | default([])) }}"
+      sequence:
+        - variables:
+            current_light: "{{ repeat.item }}"
+            is_work_area_light: "{{ current_light in input_lights_work_area | default([]) }}" # Prüfen, ob es ein Arbeitsbereichslicht ist
+
+        - condition:
+            # Nur ausführen, wenn das Licht tatsächlich eingeschaltet ist,
+            # oder wenn der Trigger das Einschalten der Lampe war.
+            # Dadurch wird vermieden, dass ausgeschaltete Lampen ungewollt angeschaltet werden.
+            condition: or
+            conditions:
+              - condition: state
+                entity_id: "{{ current_light }}"
+                state: "on"
+              - condition: "{{ trigger.platform == 'state' and trigger.entity_id == current_light }}"
+
+        - service: light.turn_on
+          target:
+            entity_id: "{{ current_light }}"
+          data:
+            # Farbtemperatur-Berechnung (Kelvin)
+            # Die Sonnenhöhe liegt typischerweise zwischen -90 (Nacht) und ca. 60-70 (Mittag im Sommer).
+            # Wir definieren einen relevanten Bereich für die Skalierung, z.B. von -10 (kurz vor Sonnenaufgang/Untergang)
+            # bis 60 (Höchster Punkt am Tag). Außerhalb dieses Bereichs werden die Min/Max-Werte verwendet.
+            color_temp_kelvin: >
+              {% set elevation = state_attr('sun.sun', 'elevation') %}
+              {% set scaled_elevation = (elevation + 10) / (60 + 10) %} {# Skaliere von -10 bis 60 auf 0 bis 1 #}
+              {% set clamped_elevation = [0, scaled_elevation, 1] | sort | custom_value(1) %} {# Clampe auf 0-1 Bereich #}
+              {# Interpolation zwischen min_ct_k und max_ct_k basierend auf der geklemmten Elevation #}
+              {% set calculated_ct = min_ct_k + (max_ct_k - min_ct_k) * clamped_elevation %}
+              {{ calculated_ct | int }}
+
+            # Helligkeits-Berechnung (Prozent)
+            # Die Helligkeit kann auch an die Sonnenhöhe gekoppelt werden, aber mit einer Mindesthelligkeit.
+            # Z.B. Abends/Nachts geringere Helligkeit, tagsüber höher.
+            brightness_pct: >
+              {% set elevation = state_attr('sun.sun', 'elevation') %}
+              {% set current_min_brightness = iif(is_work_area_light, min_bright_work, min_bright_normal) %}
+              
+              {# Beispiel: Helligkeit skaliert von 30% bei Elevation -5 auf 100% bei Elevation 30, dann konstant #}
+              {% set low_elevation_threshold = -5 %} # Ab hier beginnt die Helligkeit zu steigen
+              {% set high_elevation_threshold = 30 %} # Ab hier ist die Helligkeit auf Max
+              
+              {% if elevation <= low_elevation_threshold %}
+                {# Wenn sehr dunkel, verwende die Mindesthelligkeit #}
+                {{ current_min_brightness }}
+              {% elif elevation >= high_elevation_threshold %}
+                {# Wenn hell, nutze volle Helligkeit (oder einen hohen Wert) #}
+                100
+              {% else %}
+                {# Interpoliere zwischen min_brightness und 100% #}
+                {% set scaled_brightness_range = (elevation - low_elevation_threshold) / (high_elevation_threshold - low_elevation_threshold) %}
+                {% set calculated_brightness = current_min_brightness + (100 - current_min_brightness) * scaled_brightness_range %}
+                {{ calculated_brightness | int | max(current_min_brightness) | min(100) }} {# Sicherstellen, dass es im Bereich bleibt #}
+              {% endif %}
+
+            # Sanfter Übergang
+            transition: "{{ transition }}"
+
+# Helfer-Makro für die Clamping-Funktion, da custom_value nicht direkt in der Home Assistant Jinja2-Umgebung existiert
+# Wir müssen stattdessen die Standardfilter 'min' und 'max' verwenden
+# {{ [0, scaled_elevation, 1] | sort | first }} wäre der untere Wert, {{ [0, scaled_elevation, 1] | sort | last }} wäre der obere
+# Dies wird in der Berechnung oben direkt mit min/max gelöst, wie es in HA üblich ist.
+# Die ursprüngliche Idee mit custom_value war ein Denkfehler basierend auf anderen Jinja2-Umgebungen.
+# Die korrigierte Zeile ist: {% set clamped_elevation = [0, scaled_elevation] | max | min(1) %}
+# oder einfacher: {% set clamped_elevation = scaled_elevation | max(0) | min(1) %}
