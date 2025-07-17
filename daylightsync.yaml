@@ -123,15 +123,11 @@ action:
             current_light: "{{ repeat.item }}"
             is_work_area_light: "{{ current_light in input_lights_work_area | default([]) }}" # Prüfen, ob es ein Arbeitsbereichslicht ist
 
-        - condition: or
-          conditions:
-            # Bedingung 1: Licht ist bereits eingeschaltet
-            - condition: state
-              entity_id: "{{ current_light }}"
-              state: "on"
-            # Bedingung 2: Der Trigger war das Einschalten genau dieser Lampe
-            - condition: template
-              value_template: "{{ trigger.platform == 'state' and trigger.entity_id == current_light }}"
+        # Komplette Bedingung als Template, um dynamische Entity IDs zu ermöglichen
+        - condition: template
+          value_template: >-
+            {{ is_state(current_light, 'on') or
+               (trigger.platform == 'state' and trigger.entity_id == current_light) }}
 
         - service: light.turn_on
           target:
