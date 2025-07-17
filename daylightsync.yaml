@@ -3,6 +3,7 @@ blueprint:
   description: Passt Farbtemperatur und Helligkeit von Lichtern dynamisch an die Sonnenhöhe an, inkl. sanfter Übergänge und spezieller Helligkeit für Arbeitsbereiche.
   domain: automation
   source_url: https://raw.githubusercontent.com/Cederick/thedump/refs/heads/main/daylightsync.yaml
+
   input:
     # ----------------------------------------------------
     # Allgemeine Lichter (z.B. Wohnzimmer, Schlafzimmer)
@@ -112,7 +113,6 @@ variables:
   min_bright_normal: !input min_brightness_normal
   min_bright_work: !input min_brightness_work_area
   transition: !input transition_time
-  all_lights: "{{ states.light | map(attribute='entity_id') | list }}" # Eine Liste aller existierenden Lichter
 
 action:
   # Iterieren über alle im Blueprint ausgewählten Lichter
@@ -142,45 +142,34 @@ action:
             # Die Sonnenhöhe liegt typischerweise zwischen -90 (Nacht) und ca. 60-70 (Mittag im Sommer).
             # Wir definieren einen relevanten Bereich für die Skalierung, z.B. von -10 (kurz vor Sonnenaufgang/Untergang)
             # bis 60 (Höchster Punkt am Tag). Außerhalb dieses Bereichs werden die Min/Max-Werte verwendet.
-            color_temp_kelvin: >
+            color_temp_kelvin: >-
               {% set elevation = state_attr('sun.sun', 'elevation') %}
-              {% set scaled_elevation = (elevation + 10) / (60 + 10) %} {# Skaliere von -10 bis 60 auf 0 bis 1 #}
-              {% set clamped_elevation = [0, scaled_elevation, 1] | sort | custom_value(1) %} {# Clampe auf 0-1 Bereich #}
+              {% set scaled_elevation = (elevation - (-10)) / (60 - (-10)) %}
+              {# Klemme den Wert zwischen 0 und 1 #}
+              {% set clamped_elevation = scaled_elevation | max(0) | min(1) %}
               {# Interpolation zwischen min_ct_k und max_ct_k basierend auf der geklemmten Elevation #}
               {% set calculated_ct = min_ct_k + (max_ct_k - min_ct_k) * clamped_elevation %}
               {{ calculated_ct | int }}
-
             # Helligkeits-Berechnung (Prozent)
             # Die Helligkeit kann auch an die Sonnenhöhe gekoppelt werden, aber mit einer Mindesthelligkeit.
             # Z.B. Abends/Nachts geringere Helligkeit, tagsüber höher.
-            brightness_pct: >
+            brightness_pct: >-
               {% set elevation = state_attr('sun.sun', 'elevation') %}
               {% set current_min_brightness = iif(is_work_area_light, min_bright_work, min_bright_normal) %}
               
-              {# Beispiel: Helligkeit skaliert von 30% bei Elevation -5 auf 100% bei Elevation 30, dann konstant #}
+              {# Beispiel: Helligkeit skaliert von current_min_brightness bei Elevation -5 auf 100% bei Elevation 30, dann konstant #}
               {% set low_elevation_threshold = -5 %} # Ab hier beginnt die Helligkeit zu steigen
               {% set high_elevation_threshold = 30 %} # Ab hier ist die Helligkeit auf Max
               
               {% if elevation <= low_elevation_threshold %}
-                {# Wenn sehr dunkel, verwende die Mindesthelligkeit #}
                 {{ current_min_brightness }}
               {% elif elevation >= high_elevation_threshold %}
-                {# Wenn hell, nutze volle Helligkeit (oder einen hohen Wert) #}
                 100
               {% else %}
-                {# Interpoliere zwischen min_brightness und 100% #}
+                {# Interpoliere zwischen current_min_brightness und 100% #}
                 {% set scaled_brightness_range = (elevation - low_elevation_threshold) / (high_elevation_threshold - low_elevation_threshold) %}
                 {% set calculated_brightness = current_min_brightness + (100 - current_min_brightness) * scaled_brightness_range %}
-                {{ calculated_brightness | int | max(current_min_brightness) | min(100) }} {# Sicherstellen, dass es im Bereich bleibt #}
+                {{ calculated_brightness | int | max(current_min_brightness) | min(100) }}
               {% endif %}
-
             # Sanfter Übergang
             transition: "{{ transition }}"
-
-# Helfer-Makro für die Clamping-Funktion, da custom_value nicht direkt in der Home Assistant Jinja2-Umgebung existiert
-# Wir müssen stattdessen die Standardfilter 'min' und 'max' verwenden
-# {{ [0, scaled_elevation, 1] | sort | first }} wäre der untere Wert, {{ [0, scaled_elevation, 1] | sort | last }} wäre der obere
-# Dies wird in der Berechnung oben direkt mit min/max gelöst, wie es in HA üblich ist.
-# Die ursprüngliche Idee mit custom_value war ein Denkfehler basierend auf anderen Jinja2-Umgebungen.
-# Die korrigierte Zeile ist: {% set clamped_elevation = [0, scaled_elevation] | max | min(1) %}
-# oder einfacher: {% set clamped_elevation = scaled_elevation | max(0) | min(1) %}
